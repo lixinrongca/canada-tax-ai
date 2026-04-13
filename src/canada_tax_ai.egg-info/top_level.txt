@@ -1,2 +1,0 @@
-canada_tax_ai
-streamlit_app
