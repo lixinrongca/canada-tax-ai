@@ -9,3 +9,43 @@ pip install -e .
 cp .env.example .env
 streamlit run src/streamlit_app.py
 
+-- Drop existing function if it exists (to avoid conflicts)
+DROP FUNCTION IF EXISTS public.execute_sql(text);
+
+-- Create the function
+CREATE OR REPLACE FUNCTION public.execute_sql(sql text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    EXECUTE sql;
+END;
+$$;
+
+-- Grant execute permission
+GRANT EXECUTE ON FUNCTION public.execute_sql(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.execute_sql(text) TO anon;
+
+-- Optional comment
+COMMENT ON FUNCTION public.execute_sql(text) IS 'Executes dynamic SQL for table creation';
+
+
+
+-- Drop old version if it exists
+DROP FUNCTION IF EXISTS public.get_columns(text);
+
+CREATE OR REPLACE FUNCTION public.get_columns(p_table_name text)
+RETURNS TABLE(name text) AS $$
+BEGIN
+    RETURN QUERY SELECT c.column_name::text FROM information_schema.columns c
+    WHERE c.table_schema = 'public'
+      AND c.table_name = p_table_name
+    ORDER BY c.ordinal_position;
+END; 
+$$ 
+LANGUAGE plpgsql;
+
+-- Grant permissions
+GRANT EXECUTE ON FUNCTION public.get_columns(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_columns(text) TO anon;

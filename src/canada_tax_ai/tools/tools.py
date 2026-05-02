@@ -1,15 +1,15 @@
-
+from langchain.agents import AgentState
 from langchain_core.tools import tool
+from canada_tax_ai.core.agent_state import AgentState
 
 from canada_tax_ai.models import UserProfile
 from canada_tax_ai.persist.repository import TaxSlipRepository
 from canada_tax_ai.persist.supabase_client import SupabaseClient
 from ..tax_calculator import calculate_tax
-from ..rag import retriever
-from supabase import create_client, Client
+from ..rag.rag import retriever
+from supabase import Client
 from datetime import datetime
 import json
-from ..core.agent_state import AgentState
 
 @tool
 def canadian_tax_calculator(gross_income: float, rrsp: float = 0.0, other_deductions: float = 0.0, has_spouse: bool = False, children: int = 0) -> dict:
@@ -26,12 +26,30 @@ def query_cra_rules(query: str) -> str:
     docs = retriever.invoke(query)
     return "\n\n".join([doc.page_content for doc in docs])
 
-@tool
-def process_t4_ocr(image_path: str):
+
+def query_tax_slips(state: AgentState):
     """Your PaddleOCR + regex processing tool"""
-    # Put your previous OCR + regex code here
-    # Return structured data
-    return {"status": "success", "data": {...}}
+    sin = state.get("profile", {}).model_dump().get("sin") if state.get("profile") else None
+    if sin:
+        try:
+            repo = TaxSlipRepository()
+            slips = repo.get_t45_by_sin(sin,"t4")
+            print(f"Queried tax slips for SIN {sin}: {slips}")
+            return {"messages": slips if slips else "No tax slips found for this SIN.", "knowledge": state.get("knowledge", {})}
+        except Exception as e:
+            print(f"Error querying tax slips: {e}")
+            return {"messages": "Please upload your tax slips.", "knowledge": state.get("knowledge", {})}
+    else:
+        return {"messages": "No SIN available in user profile to query tax slips.What is your SIN?",
+            "knowledge": state.get("knowledge", {})}
+
+def query_profile(state: AgentState):
+    """Your PaddleOCR + regex processing tool"""
+    print(f"Getting user profile for tool: {state.get('next_tool')}")
+    return {
+        "messages": state.get("profile", {}).model_dump_json(indent=2) if state.get("profile") else "No profile data",
+        "knowledge": state.get("knowledge", {}),
+    }
 
 @tool
 def save_tax_record_to_db(record: dict):
@@ -59,18 +77,19 @@ def save_tax_record_to_db(record: dict):
         "record_id": response.data[0].get("id") if response.data else None,
         "saved_at": timestamp
     }
+
 @tool
-def save_userprofile_to_db(profile: UserProfile):
+def save_to_db(profile: UserProfile):
     """Saves the UserProfile entity to the database. This should be called whenever the UserProfile is updated with new information."""
     repo = TaxSlipRepository()
     data = profile.model_dump(exclude_none=True)
-    print("Prepared data for DB:", data)
+    print(f"Prepared data for DB: {data}")
     message =""
     try:
         saved = repo.upsert(data, "user_profiles")
         message = "Successful save with ID: " + saved.get("id")
     except Exception as e:
-        print("Error saving UserProfile to DB:", e)
+        print(f"Error saving to DB: {e}")
         message = str(e)
 
     return {
@@ -80,10 +99,21 @@ def save_userprofile_to_db(profile: UserProfile):
     }
 
 @tool
-def end_chain(profile: UserProfile):
+def end_node(profile: UserProfile):
     """This tool can be called to signal the end of the workflow. It doesn't perform any action but can be used for clarity in the graph."""
+
     return {
         "messages": "UserProfile saved to DB.",
         "knowledge": "knowledge",
         "profile": profile
     }
+
+
+@tool
+def  verify_addresss(address_input: str) -> str:
+    """A tool to verify and correct the user's address using an external API (e.g., Canada Post). 
+    This is just a placeholder function. In production, implement actual API calls to validate and standardize the address."""
+    print(f"Verifying address: {address_input}")
+    # Simulate verification by appending "Verified" to the address
+    verified_address = address_input + " (Verified)"
+    return verified_address

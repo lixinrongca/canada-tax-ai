@@ -1,0 +1,10 @@
+[
+  {
+    "input": "I am 30 years old and live in Canada. I like skiing.",
+    "expected": {
+      "age": 30,
+      "location": "Canada",
+      "interests": ["skiing"]
+    }
+  }
+]

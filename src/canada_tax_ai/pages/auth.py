@@ -1,3 +1,4 @@
+from pdfplumber import page
 import streamlit as st
 from canada_tax_ai.persist.db import register_user, verify_user
 
@@ -35,7 +36,7 @@ def login_page():
             st.rerun()
 
 def logout_button():
-    if st.sidebar.button("🚪 Logout"):
+    if st.button("Logout"):
         st.session_state.logged_in = False
         st.session_state.pop("username", None)
         st.rerun()

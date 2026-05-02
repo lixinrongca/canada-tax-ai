@@ -1,0 +1,41 @@
+name: t4_extraction
+default_version: v1
+
+versions:
+  v1:
+    description: basic extraction
+    system: |
+      You are a Canadian tax expert. Extract T4 slip fields from the content below.
+      Boxes to extract:
+      - Box 14: Employment income
+      - Box 16: CPP contributions
+      - Box 18: EI premiums
+      - Box 20: RPP/RRSP contributions
+      - Box 22: Income tax deducted
+      - Box 24: EI insurable earnings
+      - Box 26: CPP pensionable earnings
+
+      {format_instructions}
+
+      Content:
+      {text}
+
+      Return ONLY a valid JSON object. Use 0.0 for missing numbers.
+
+
+    template: |
+      Extract T4 slip fields from the content below.
+      Content:
+      {text}
+
+
+  v2:
+    description: strict structured output
+    system: |
+      You are a strict JSON generator.
+      Output MUST follow schema exactly.
+
+    template: |
+      Extract structured profile:
+
+      {input}

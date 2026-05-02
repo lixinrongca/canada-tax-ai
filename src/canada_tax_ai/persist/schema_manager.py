@@ -24,7 +24,7 @@ Rules:
 - Use snake_case for column names
 - Add IF NOT EXISTS
 - Add a comment per column describing what it stores
-- Always add a UNIQUE constraint on (sin) — this is required for upsert ON CONFLICT to work
+- Always add a UNIQUE constraint on (sin), Add a prifix to constraint's name to avoid conflict with other tables — this is required for upsert ON CONFLICT to work
 - DO NOT generate any trigger or function — only TABLE and INDEX SQL
 - Always end with a CREATE INDEX on sin for fast lookups
 
@@ -42,7 +42,7 @@ New parsed data has these extra fields not in the table:
 
 Generate ALTER TABLE statements to add the missing columns.
 Rules:
-- Use ALTER TABLE tax_slips ADD COLUMN IF NOT EXISTS
+- Use ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS
 - Map types correctly: float→numeric(12,2), str→text, int→integer, bool→boolean
 - One statement per column
 
@@ -62,11 +62,13 @@ Return ONLY the SQL statements separated by semicolons, no explanation, no markd
     def _get_existing_columns(self,table_name: str) -> set[str]:
         """Fetch current columns from Supabase information_schema."""
         try:
-            result = self.supabase.rpc("get_columns", {"table_name": table_name}).execute()
+            result = self.supabase.rpc("get_columns", {"p_table_name": table_name}).execute()
+            print(f"Existing columns in {table_name}: {result.data}")
             if result.data:
-                self._existing_columns = {row["column_name"] for row in result.data}
+                self._existing_columns = {row["name"] for row in result.data}
             return self._existing_columns
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Error fetching existing columns: {e}")
             return set()
 
     def _execute_sql(self, sql: str):
@@ -86,7 +88,6 @@ Return ONLY the SQL statements separated by semicolons, no explanation, no markd
         Called automatically after every successful parse.
         """
         existing = self._get_existing_columns(table_name)
-
         if not existing:
             # Table doesn't exist — LLM creates it
             print("📋 Table not found — asking LLM to create schema...")

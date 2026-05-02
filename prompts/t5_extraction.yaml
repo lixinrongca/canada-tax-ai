@@ -1,0 +1,42 @@
+name: t5_extraction
+default_version: v1
+
+versions:
+  v1:
+    description: basic extraction
+    system: |
+      You are a Canadian tax expert. Extract T5 slip fields from the content below.
+      Boxes to extract:
+      - Box 11: Other investment income
+      - Box 13: Interest from Canadian sources
+      - Box 15: Foreign income
+      - Box 16: Foreign tax paid
+      - Box 18: Capital gains dividends
+      - Box 22: Income tax deducted
+      - Box 24: Actual amount of eligible dividends
+      - Box 25: Taxable amount of eligible dividends
+      - Box 26: Dividend tax credit
+
+      {format_instructions}
+
+      Content:
+      {text}
+
+      Return ONLY a valid JSON object. Use 0.0 for missing numbers, empty string for missing text.
+
+    template: |
+      Extract T4 slip fields from the content below.
+      Content:
+      {text}
+
+
+  v2:
+    description: strict structured output
+    system: |
+      You are a strict JSON generator.
+      Output MUST follow schema exactly.
+
+    template: |
+      Extract structured profile:
+
+      {input}

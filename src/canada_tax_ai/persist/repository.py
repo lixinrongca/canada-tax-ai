@@ -1,4 +1,6 @@
 # db/repository.py
+from dataclasses import asdict
+
 from supabase import create_client, Client
 
 from canada_tax_ai.persist.supabase_client import SupabaseClient
@@ -8,6 +10,8 @@ from datetime import datetime, timezone
 import uuid
 import os
 import time
+from loguru import logger
+from canada_tax_ai.models import TaxResult
 
 class TaxSlipRepository:
 
@@ -17,9 +21,17 @@ class TaxSlipRepository:
 
     def _prepare_record(self, extracted: dict) -> dict:
         """Flatten extracted data into a single DB row."""
-        doc_type = extracted.get("document_type", "")
+        doc_type = ""
+        if not isinstance(extracted, TaxResult):# Tax Result doesn't have document_type field, so we infer it from context or default to empty string
+            doc_type = extracted.get("document_type", "")
+        logger.info(f"Preparing record for DB insertion. Extracted data keys: {extracted}, document type: {doc_type}")
         if(doc_type not in ["T4", "T5"]):
-            extend_data = extracted
+            if isinstance(extracted, TaxResult):
+                extend_data = asdict(extracted)  # Convert dataclass to dict
+            else:
+                extend_data = extracted
+            logger.info(f"Document type '{doc_type}' is not T4/T5. Saving with generic schema. Extend data keys: {extend_data}")
+            
             record = {
                 "id": str(uuid.uuid4()),
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -27,7 +39,7 @@ class TaxSlipRepository:
                 **extend_data  # flatten T4/T5 fields directly into row
             }
         else:
-            extend_data = extracted.get("t4", {}) if doc_type == "T4" else extracted.get("t5", {})
+            extend_data = extracted.get("t4", [])[-1] if doc_type == "T4" else extracted.get("t5", []) [-1]
             record = {
                 "id": str(uuid.uuid4()),
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -56,33 +68,36 @@ class TaxSlipRepository:
         try:
             result = self.supabase.table("tax_slips").insert(record).execute()
             saved = result.data[0] if result.data else record
-            print(f"✅ Saved to Supabase: id={saved.get('id')}, type={saved.get('document_type')}")
+            logger.info(f"✅ Saved to Supabase: id={saved.get('id')}, type={saved.get('document_type')}")
             return saved
         except Exception as e:
-            print(f"⚠️ Supabase insert failed: {e}")
+            logger.warning(f"⚠️ Supabase insert failed: {e}")
             raise
 
-    def get_by_sin(self, sin: str) -> list[dict]:
-        result = self.supabase.table("tax_slips").select("*").eq("sin", sin).execute()
+    def get_t45_by_sin(self, sin: str,table_name: str) -> list[dict]:
+        result = self.supabase.table(table_name).select("*").eq("sin", sin).execute()
         return result.data or []
 
     def upsert(self, extracted: dict,table_name: str, retries: int = 3) -> dict:
         """Update if SIN + document_type exists, else insert."""
         record = self._prepare_record(extracted)
+        logger.info(f"Upserting into '{table_name}' with record keys: {list(record.keys())}")
         self.schema_manager.ensure_schema(record, table_name)
+        logger.info(f"Schema ensured for upsert. Attempting to upsert record with keys: {list(record.keys())}")
         for attempt in range(retries):
             try:
                 result = self.supabase.table(table_name).upsert(
-                    record
+                    record,
+                    on_conflict="sin"
                 ).execute()
                 saved = result.data[0] if result.data else record
-                print(f"✅ Upserted: id={saved.get('id')}")
+                logger.info(f"✅ Upserted: id={saved.get('id')}")
                 return saved
             except Exception as e:
-                print(f"⚠️ Supabase upsert failed: {e}")
+                logger.warning(f"⚠️ Supabase upsert failed: {e}")
                 if "schema cache" in str(e).lower() and attempt < retries - 1:
                     wait = 2 ** attempt  # 1s, 2s, 4s
-                    print(f"⚠️ Schema cache miss — retrying in {wait}s (attempt {attempt + 1}/{retries})")
+                    logger.info(f"⚠️ Schema cache miss — retrying in {wait}s (attempt {attempt + 1}/{retries})")
                     time.sleep(wait)
                 else:
                     raise e
