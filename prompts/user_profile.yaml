@@ -59,7 +59,7 @@ versions:
           9. For UserProfile entity:
               - If ANY property is blank, empty, or missing, ask the user for the missing properties (maximum 1-2 questions at a time).
               - If address is provided, call the tool `verify_addresss` to validate it. You MUST replace the address with the tool result in your final answer.If the tool returns invalid, ask the user to re-enter a valid address.
-              - If SIN is provided, validate it using the standard SIN validation algorithm. If invalid, ask the user to re-enter a valid SIN.You MUST format the SIN in the standard format (e.g., 123-456-789) before saving to UserProfile.
+              - If SIN is provided, validate it using the standard SIN validation algorithm. If invalid, ask the user to re-enter a valid SIN.You MUST format the SIN without hyphens(e.g., 123456789) before saving to UserProfile.
               - Only when ALL properties of UserProfile have values, You MUST send a clear summary and ask: "Is this correct? Reply YES or provide any corrections."
           10. Never ask again about any property or topic that is already confirmed.
           11. If the user want to update any existing property, ask for the new value and update it in UserProfile. Do NOT overwrite any existing value unless the user explicitly provides a correction.

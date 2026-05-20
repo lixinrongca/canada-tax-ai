@@ -5,9 +5,10 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
 from canada_tax_ai.core.llm import get_llm
+from canada_tax_ai.tools.build_input import update_tax_input
 from canada_tax_ai.utils import parse_t4, parse_t5
 from ..config import config
-from ..models import TaxSlipData, T4SlipData, T5SlipData
+from ..models import TaxInputData, TaxSlipData, T4SlipData, T5SlipData
 from ..persist.repository import TaxSlipRepository
 from .agent_state import AgentState
 import pdfplumber
@@ -122,70 +123,16 @@ Return ONLY a valid JSON object. If a field is missing, use 0.0 for numbers and 
         logger.info(f"Vision LLM raw response:\n{response.content}")
         result = self.vision_parser.parse(response.content)
         return result
-
-
-    def _analyze(self, file_path: str) -> dict:
-        # --- Image path: send directly to vision LLM ---
-        if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-            logger.info("Image detected — sending directly to vision LLM...")
-            result = self._extract_from_image_via_llm(file_path)
-            return result.model_dump()
-
-        # --- PDF path: use pdfplumber + regex + text LLM ---
-        #TODO - if regex fails, send raw text to LLM with a prompt to extract fields without regex guidance
-        #TODO - if the PDF is not text-based (i.e. scanned), fallback to OCR + vision LLM extraction
-        data = ""
-        with pdfplumber.open(file_path) as pdf:
-            first_page = pdf.pages[0]
-            text = first_page.extract_text()
-            logger.info(f"Extracted text from PDF:\n{text}")
-
-            sin = self._extract_sin(text)
-            doc_type = self._detect_doc_type(text)
-            if doc_type == "T4":
-                data = parse_t4(text)
-            elif doc_type == "T5":
-                data = parse_t5(text)
-            else:                
-                data = text  # fallback to raw text for LLM parsing if type detection fails 
-
-        parser, prompt = self._get_parser_and_prompt(doc_type)
-
-        chain = prompt | self.llm | parser
-        slip_data = chain.invoke({
-            "text": data,
-            "format_instructions": parser.get_format_instructions()
-        })
-
-
-
-        # Assemble unified output
-        result = TaxSlipData(document_type=doc_type, sin=sin)
-        if doc_type == "T4":
-            result.t4 = slip_data
-            table_name = "t4"
-        else:
-            result.t5 = slip_data
-            table_name = "t5" 
-        
-        logger.info(f"Parsed Tax Slip Data:\n{result}")
-        extracted = result.model_dump(exclude_none=True)
-        try:
-            saved = self.repo.upsert(extracted, table_name)
-            extracted["db_id"] = saved.get("id")
-        except Exception as e:
-            extracted["db_error"] = str(e)
-        return extracted
     
 def document_node(state: AgentState):
     analyzer = TaxSlipAnalyzer()
     file_path = state.get("file_path")
-    print(f"Analyzing file: {file_path}")
+    logger.info(f"Tax input data : {state.get('tax_input_data')}")
     # --- Image path: send directly to vision LLM ---
     if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
         logger.info("Image detected — sending directly to vision LLM...")
         result = analyzer._extract_from_image_via_llm(file_path)
-        return result.model_dump()
+        return {"extracted_data": result.model_dump()}
 
     # --- PDF path: use pdfplumber + regex + text LLM ---
     #TODO - if regex fails, send raw text to LLM with a prompt to extract fields without regex guidance
@@ -224,7 +171,7 @@ def document_node(state: AgentState):
     else:
         result.t5 = existing.get("t5", [])+[slip_data]
         result.t4 = existing.get("t4", [])  
-        table_name = "t5" 
+        table_name = "t5"
     
     logger.info(f"Parsed Tax Slip Data:\n{result}")
     extracted = result.model_dump(exclude_none=True)
@@ -234,4 +181,17 @@ def document_node(state: AgentState):
     except Exception as e:
         extracted["db_error"] = str(e)
 
-    return {**state, "extracted_data": extracted}
+    raw = state.get("tax_input_data") if state.get("tax_input_data") else TaxInputData()
+    if raw is None:
+        existing_tax_input_data = TaxInputData()
+    if isinstance(raw, TaxInputData):
+        existing_tax_input_data = raw          # already correct type (first run, before checkpoint)
+    if isinstance(raw, dict):
+        existing_tax_input_data = TaxInputData(**raw)   # ✅ deserialize from checkpoint
+    logger.info(f"Existing TaxInputData Type is {type(existing_tax_input_data)}")
+    logger.info(f"Existing TaxInputData before update: {existing_tax_input_data}")
+    updated_tax_input_data = update_tax_input(existing_tax_input_data, extracted.get("t4", []), extracted.get("t5", []))
+
+    return {"extracted_data": extracted, 
+            "tax_input_data": updated_tax_input_data.model_dump(exclude_none=True),
+            "file_path": None}

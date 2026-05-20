@@ -1,7 +1,7 @@
 import streamlit as st
 from canada_tax_ai.tax_calculator import calculate_tax
 from canada_tax_ai.core.graph import process_chat, process_document
-from canada_tax_ai.utils import generate_tax_pdf
+from canada_tax_ai.utils import render_slip_table
 from canada_tax_ai.pages.auth import login_page, logout_button
 from canada_tax_ai.persist.db import save_tax_report
 from canada_tax_ai.core.document_agent import TaxSlipAnalyzer
@@ -109,7 +109,7 @@ with left_col:
                 {"role": "assistant", "content": (
                     f"Hello {st.session_state.username}! 👋\n\n"
                     "To help you with your Canadian tax return, I'll ask you a few questions step by step.\n\n"
-                    "First: What is your full name, date of birth, SIN, and current address?"
+                    "First: What is your prefered language?"
                 )}
             ]
 
@@ -136,26 +136,18 @@ with left_col:
                     # st.markdown(prompt.text)
                     st.session_state.messages.append({"role": "user", "content": prompt.text})
                     response = process_chat(prompt.text)
-                    if isinstance(response, dict) and "document_type" in response:
-                        doc_type = response.get("document_type", "").upper()
+                    response_content = response.get("messages", "") if isinstance(response, dict) else response
+                    tax_result = response.get("tax_result", {}) if isinstance(response, dict) else None
+                    logger.info(f"Chat response content: {response}")
+                    if tax_result:
+                        st.session_state.tax_result = tax_result
+                    if isinstance(response_content, dict) and "document_type" in response_content:
+                        doc_type = response_content.get("document_type", "").upper()
                         model = T4SlipData if doc_type == "T4" else T5SlipData
-                        descriptions = {k: v.description for k, v in model.model_fields.items()}
-                        table = (
-                            pd.DataFrame(
-                                response,
-                                index=[0]
-                            )
-                            .T
-                            .rename(columns={0: "Value"})
-                            .assign(Description=lambda df: df.index.map(descriptions))
-                            [["Description", "Value"]]
-                            .assign(Value=lambda df: df["Value"].apply(
-                                lambda x: f"{float(x):.2f}" if isinstance(x, (int, float)) else x
-                            ))
-                        )
+                        table = render_slip_table(response_content, doc_type, model)
                         st.session_state.messages.append({"role": "assistant", "content": table})
                     else:
-                        st.session_state.messages.append({"role": "assistant", "content": response})
+                        st.session_state.messages.append({"role": "assistant", "content": response_content})
 
                 if prompt and prompt["files"]:
                     logger.info(f"Received files: {prompt['files']}")
@@ -185,20 +177,7 @@ with left_col:
                         st.session_state.processed_files[file_key] = extracted
 
                         model = T4SlipData if doc_type == "T4" else T5SlipData
-                        descriptions = {k: v.description for k, v in model.model_fields.items()}
-                        table = (
-                            pd.DataFrame(
-                                extracted.get("t4", [])[-1] if doc_type == "T4" else extracted.get("t5", [])[-1],
-                                index=[0]
-                            )
-                            .T
-                            .rename(columns={0: "Value"})
-                            .assign(Description=lambda df: df.index.map(descriptions))
-                            [["Description", "Value"]]
-                            .assign(Value=lambda df: df["Value"].apply(
-                                lambda x: f"{float(x):.2f}" if isinstance(x, (int, float)) else x
-                            ))
-                        )
+                        table = render_slip_table(extracted, doc_type, model)
 
                         current_sin = extracted.get("sin", "").replace(" ", "")
                         if not current_sin:
@@ -234,4 +213,3 @@ with right_col:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-    

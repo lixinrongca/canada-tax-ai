@@ -3,7 +3,7 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic import BaseModel, Field
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 
 class UserProfile(BaseModel):
@@ -16,6 +16,7 @@ class UserProfile(BaseModel):
     dependents: List[Dict] = Field(default_factory=list,description="List of dependents with name, DOB, and relationship")
     sin: str = Field("", pattern=r"^\d{3} \d{3} \d{3}$", description="Social Insurance Number (SIN) in format XXX XXX XXX")
     province: str = Field("", description="Province of residence for tax purposes")
+    language: str = Field("", description="Preferred language ")
     
     # sin: str = ""
     # @field_validator("sin")
@@ -68,6 +69,36 @@ class TaxSlipData(BaseModel):
     t5: list[T5SlipData] = Field(default_factory=list, description="T5 specific fields")
     other_info: str = Field("", description="Any other important information")
 
+class TaxInputData(BaseModel):
+    province: Optional[str] = Field("", description="Province of residence for tax purposes")
+    # Income sources
+    employment_income:     Optional[float] = Field(None, description="Total employment income")
+    eligible_dividends:    Optional[float] = Field(None, description="Total eligible dividends received,T3/T5 eligible dividends (actual amount)")
+    capital_gains:         Optional[float] = Field(None, description="Total capital gains (gross)") 
+    capital_losses:        Optional[float] = Field(None, description="Total capital losses (gross)")
+    self_employment_income: Optional[float] = Field(None, description="Net income from self-employment (T2125)")
+    # Deductions
+    rrsp_contribution:     Optional[float] = Field(None, description="RRSP contribution amount")
+    union_dues:             Optional[float] = Field(None, description="Union dues (T4 Box 44)")
+    childcare_expenses:     Optional[float] = Field(None, description="Childcare expenses")
+    moving_expenses:        Optional[float] = Field(None, description="Moving expenses")
+    other_deductions:       Optional[float] = Field(None, description="Other deductions (line 23200)")
+    # Credits (amounts paid / qualifying expenses)
+    medical_expenses:         Optional[float] = Field(None, description="Total medical expenses for the year")
+    charitable_donations:     Optional[float] = Field(None, description="Total charitable donations for the year")
+    tuition_paid:             Optional[float] = Field(None, description="Total tuition paid for the year") 
+
+    # Withholdings / prepayments
+    federal_tax_withheld:  Optional[float] = Field(None, description="Federal income tax withheld")
+    cpp_contributions:     Optional[float] = Field(None, description="CPP contributions")
+    ei_premiums:           Optional[float] = Field(None, description="EI premiums paid")
+
+    total_rent_paid:          Optional[float] = Field(None, description="Total rent paid for the year")
+    property_tax_paid:        Optional[float] = Field(None, description="Total property tax paid for the year")
+    other_investment_income: Optional[float] = Field(None, description="Other investment income ")
+    # add other fields as needed
+    
+
 
 @dataclass
 class TaxResult:
@@ -110,36 +141,6 @@ class TaxResult:
     notes: list            = field(default_factory=list)
 
 
-@dataclass
-class TaxInput:
-    province: str = "ON"
-
-    # Income sources
-    employment_income:      float = 0.0   # T4 Box 14
-    eligible_dividends:     float = 0.0   # T3/T5 eligible dividends (actual amount)
-    other_investment_income: float = 0.0  # interest, foreign income, etc.
-    capital_gains:          float = 0.0   # total capital gains (gross)
-    capital_losses:         float = 0.0   # total capital losses (gross)
-    self_employment_income: float = 0.0   # T2125 net business income
-
-    # Deductions
-    rrsp_deduction:         float = 0.0
-    union_dues:             float = 0.0   # T4 Box 44
-    childcare_expenses:     float = 0.0
-    moving_expenses:        float = 0.0
-    other_deductions:       float = 0.0   # line 23200
-
-    # Credits (amounts paid / qualifying expenses)
-    medical_expenses:       float = 0.0
-    charitable_donations:   float = 0.0
-    tuition_paid:           float = 0.0   # T2202
-
-    # Withholdings / prepayments
-    tax_withheld:           float = 0.0   # T4 Box 22
-    cpp_contributions:      float = 0.0   # T4 Box 16 (employee share)
-    ei_premiums:            float = 0.0   # T4 Box 18
-
-
 def validate_sin(sin: str) -> bool:
         sin = sin.replace(" ", "")
         if not re.fullmatch(r"\d{9}", sin):
@@ -155,3 +156,9 @@ def validate_sin(sin: str) -> bool:
                     d -= 9
             total += d
         return total % 10 == 0
+
+def to_tax_input(raw) -> TaxInputData:
+    if raw is None:                   return TaxInputData()
+    if isinstance(raw, TaxInputData): return raw
+    if isinstance(raw, dict):         return TaxInputData(**raw)
+    return TaxInputData()

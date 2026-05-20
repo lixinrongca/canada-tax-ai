@@ -8,11 +8,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from canada_tax_ai.persist.repository import TaxSlipRepository
-from canada_tax_ai.tools.build_input import build_tax_input
 from ..core.agent_state import AgentState
-from canada_tax_ai.models import TaxResult, TaxInput, validate_sin
+from canada_tax_ai.models import TaxInputData, TaxResult, to_tax_input, validate_sin
 from loguru import logger
-from dataclasses import asdict
 
 
 # ── 2024 Federal brackets ──────────────────────────────────────────────────
@@ -100,112 +98,70 @@ def _non_refundable_credit(amount: float, rate: float = 0.15) -> float:
     """Convert a credit base amount to federal tax reduction (15% federal rate)."""
     return amount * rate
 
-
-def _extracted_data_to_tax_input(data: dict) -> TaxInput:
-    """
-    Convert extracted tax slip data (T4 + T5) into a TaxInput for calculate_tax().
-    
-    Handles:
-    - Missing or None values (defaults to 0.0)
-    - Province from T4 province_of_employment
-    - T4 Box 22 → tax_withheld, Box 16 → cpp, Box 18 → ei
-    - T5 eligible dividends, interest, capital gains dividends
-    """
-
-    def safe_float(value, default: float = 0.0) -> float:
-        """Return float or default if value is None / empty string / unparseable."""
-        if value is None or value == "":
-            return default
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-        
-    logger.info(f"Converting extracted data to TaxInput. Raw data keys: {data}")
-    t4 = data.get("t4", [])
-    t5 = data.get("t5", [])
-    logger.info(f"Extracted data for tax input conversion: \n\r{t4[0].get("gross_income")} \n\r {t4[0].get("rrsp")}")
-
-    return TaxInput(
-        # Province from T4; fall back to "ON" if missing
-        province=t4.get("province_employment") or "ON",
-
-        # ── Income ────────────────────────────────────────────────
-        employment_income       = safe_float(t4.get("gross_income")),
-
-        # T5 Box 24 — actual amount of eligible dividends
-        eligible_dividends      = safe_float(t5.get("actual_dividends")),
-
-        # T5 Box 13 interest + Box 15 foreign income (if present)
-        other_investment_income = (
-            safe_float(t5.get("interest_income"))
-            + safe_float(t5.get("foreign_income"))
-        ),
-
-        # T5 Box 18 capital gains dividends treated as gross gains
-        capital_gains           = safe_float(t5.get("capital_gains_dividends")),
-        capital_losses          = 0.0,          # not available on T4/T5; requires Schedule 3
-
-        self_employment_income  = 0.0,          # requires T2125; not on T4/T5
-
-        # ── Deductions ────────────────────────────────────────────
-        rrsp_deduction          = safe_float(t4.get("rrsp")),
-        union_dues              = safe_float(t4.get("union_dues")),       # T4 Box 44
-        childcare_expenses      = 0.0,          # requires Form T778
-        moving_expenses         = 0.0,          # requires Form T1-M
-        other_deductions        = 0.0,
-
-        # ── Credits ───────────────────────────────────────────────
-        medical_expenses        = 0.0,          # requires receipts
-        charitable_donations    = 0.0,          # requires receipts
-        tuition_paid            = 0.0,          # requires T2202
-
-        # ── Withholdings ─────────────────────────────────────────
-        tax_withheld            = safe_float(t4.get("tax_deducted")),     # T4 Box 22
-        cpp_contributions       = safe_float(t4.get("cpp")),              # T4 Box 16
-        ei_premiums             = safe_float(t4.get("ei")),               # T4 Box 18
-    )
-
 def calculate_tax(state: AgentState) -> TaxResult:
+    def f(value: Optional[float]) -> float:
+        """Convert None tax field to 0.0 for safe arithmetic."""
+        return value or 0.0
     # inp: TaxInput
+    profile = state.get("profile",{})
+    logger.info(f"User Profile is {profile}")
+    
     data = state.get("extracted_data", {})
     current_sin = data.get("sin", "").replace(" ", "")
-    inp = build_tax_input(data.get("t4", []), data.get("t5", []))
+
+    inp = to_tax_input(state.get("tax_input_data", {}))
+    # if raw is None:
+    #     inp = TaxInputData()
+    # if isinstance(raw, TaxInputData):
+    #     inp = raw          # already correct type (first run, before checkpoint)
+    # if isinstance(raw, dict):
+    #     inp = TaxInputData(**raw)  
+    
     logger.info(f"Converted extracted data to TaxInput: {data} \r\n {inp}")
     r = TaxResult()
     if validate_sin(current_sin):
         r.sin = current_sin
     else:
-        logger.warning(f"Invalid or missing SIN: '{current_sin}' — proceeding without SIN in tax result.")
-        raise ValueError(f"Unknown sin: {current_sin}")
+        current_sin = getattr(profile, "sin", "").replace(" ", "")
+        if validate_sin(current_sin):
+            r.sin = current_sin
+        else:
+            logger.warning(f"Invalid or missing SIN: '{current_sin}' — proceeding without SIN in tax result.")
+            raise ValueError(f"Unknown sin: {current_sin}")
     
-    prov = inp.province.upper()
-
+    
+    prov = getattr(profile, "province", "").upper()
     if prov not in PROVINCIAL_RATES:
-        raise ValueError(f"Unknown province code: {prov}")
+        prov = getattr(inp, "province", "").upper()
+    if prov not in PROVINCIAL_RATES:
+        logger.warning(f"Province not found in input or profile: '{prov}' — defaulting")
+        return {
+            "messages": "Which province do you reside in? (You can reply with the full name, e.g., Ontario, or the abbreviation, e.g., ON.) This is needed to calculate your provincial tax and credits accurately.",
+            "knowledge": state.get("knowledge", {}),
+        }
 
     # ── STEP 1: Compute gross-up on eligible dividends ─────────────────────
-    r.grossed_up_dividends = inp.eligible_dividends * (1 + ELIGIBLE_DIV_GROSSUP)
+    r.grossed_up_dividends = f(inp.eligible_dividends) * (1 + ELIGIBLE_DIV_GROSSUP)
 
     # ── STEP 2: Total income (line 15000) ──────────────────────────────────
-    net_capital_gains = max(inp.capital_gains - inp.capital_losses, 0)
+    net_capital_gains = max(f(inp.capital_gains) - f(inp.capital_losses), 0)
     taxable_cap_gains  = net_capital_gains * CAPITAL_GAINS_INCLUSION
 
     r.total_income = (
-        inp.employment_income
+        f(inp.employment_income)
         + r.grossed_up_dividends
-        + inp.other_investment_income
+        + f(inp.other_investment_income)
         + taxable_cap_gains
-        + inp.self_employment_income
+        + f(inp.self_employment_income)
     )
 
     # ── STEP 3: Net income (line 23600) ────────────────────────────────────
     deductions = (
-        inp.rrsp_deduction
-        + inp.union_dues
-        + inp.childcare_expenses
-        + inp.moving_expenses
-        + inp.other_deductions
+        f(inp.rrsp_contribution)
+        + f(inp.union_dues)
+        + f(inp.childcare_expenses)
+        + f(inp.moving_expenses)
+        + f(inp.other_deductions)
     )
     r.net_income = max(r.total_income - deductions, 0)
 
@@ -225,8 +181,8 @@ def calculate_tax(state: AgentState) -> TaxResult:
     r.net_provincial_tax = r.provincial_tax
 
     # ── STEP 7: Federal non-refundable credits ─────────────────────────────
-    cpp_credit = _calculate_cpp(inp.employment_income, inp.cpp_contributions)
-    ei_credit  = _calculate_ei(inp.employment_income, inp.ei_premiums)
+    cpp_credit = _calculate_cpp(f(inp.employment_income), f(inp.cpp_contributions))
+    ei_credit  = _calculate_ei(f(inp.employment_income), f(inp.ei_premiums))
 
     r.federal_basic_personal_credit = _non_refundable_credit(FEDERAL_BASIC_PERSONAL)
     r.federal_cpp_credit            = _non_refundable_credit(cpp_credit)
@@ -234,17 +190,17 @@ def calculate_tax(state: AgentState) -> TaxResult:
 
     # Medical: only amount exceeding 3% of net income or $2,635 (lesser)
     medical_threshold = min(r.net_income * 0.03, 2_635)
-    eligible_medical  = max(inp.medical_expenses - medical_threshold, 0)
+    eligible_medical  = max(f(inp.medical_expenses) - medical_threshold, 0)
     r.federal_medical_credit = _non_refundable_credit(eligible_medical)
 
     # Charitable donations: 15% on first $200, 29% above $200
-    if inp.charitable_donations <= 200:
-        r.federal_donation_credit = inp.charitable_donations * 0.15
+    if f(inp.charitable_donations) <= 200:
+        r.federal_donation_credit = f(inp.charitable_donations) * 0.15
     else:
-        r.federal_donation_credit = 200 * 0.15 + (inp.charitable_donations - 200) * 0.29
+        r.federal_donation_credit = 200 * 0.15 + (f(inp.charitable_donations) - 200) * 0.29
 
-    r.federal_tuition_credit  = _non_refundable_credit(inp.tuition_paid)
-    r.federal_dividend_credit = inp.eligible_dividends * ELIGIBLE_DIV_GROSSUP * ELIGIBLE_DIV_CREDIT
+    r.federal_tuition_credit  = _non_refundable_credit(f(inp.tuition_paid))
+    r.federal_dividend_credit = f(inp.eligible_dividends) * ELIGIBLE_DIV_GROSSUP * ELIGIBLE_DIV_CREDIT
 
     r.total_federal_credits = (
         r.federal_basic_personal_credit
@@ -264,7 +220,7 @@ def calculate_tax(state: AgentState) -> TaxResult:
     r.total_payable = r.net_federal_tax + r.net_provincial_tax
 
     # ── STEP 10: Subtract withholdings and refundable credits ──────────────
-    r.total_credits_and_payments = inp.tax_withheld   # add GST/HST credit, CCB etc. here
+    r.total_credits_and_payments = f(inp.federal_tax_withheld)   # add GST/HST credit, CCB etc. here
 
     # ── STEP 11: Balance owing / refund ────────────────────────────────────
     r.balance_owing = r.total_payable - r.total_credits_and_payments
@@ -274,9 +230,9 @@ def calculate_tax(state: AgentState) -> TaxResult:
     else:
         r.notes.append(f"Refund: ${abs(r.balance_owing):,.2f} — expect ~2 weeks via direct deposit")
 
-    if inp.self_employment_income > 0:
+    if f(inp.self_employment_income) > 0:
         self_emp_cpp = min(
-            (inp.self_employment_income - CPP_EXEMPTION) * CPP_RATE * 2,
+            (f(inp.self_employment_income) - CPP_EXEMPTION) * CPP_RATE * 2,
             (CPP_MAX_PENSIONABLE - CPP_EXEMPTION) * CPP_RATE * 2
         )
         r.notes.append(
@@ -296,81 +252,3 @@ def calculate_tax(state: AgentState) -> TaxResult:
         logger.error(f"Error saving tax result to database: {e}")
 
     return result
-
-
-def print_summary(r: TaxResult) -> None:
-    """Print a formatted T1 summary."""
-    width = 52
-    sep   = "─" * width
-
-    def row(label, value, indent=0):
-        prefix = "  " * indent
-        print(f"  {prefix}{label:<{width - 4 - len(prefix)}} ${value:>12,.2f}")
-
-    print(f"\n{'═' * (width + 4)}")
-    print(f"  CANADA T1 TAX RETURN SUMMARY")
-    print(f"{'═' * (width + 4)}")
-
-    print(f"\n  INCOME")
-    print(f"  {sep}")
-    row("Grossed-up dividends included", r.grossed_up_dividends)
-    row("Total income          (line 15000)", r.total_income)
-    row("Net income            (line 23600)", r.net_income)
-    row("Taxable income        (line 26000)", r.taxable_income)
-
-    print(f"\n  TAX CALCULATION")
-    print(f"  {sep}")
-    row("Federal tax before credits",    r.federal_tax_before_credits)
-    row("Less: total federal credits",  -r.total_federal_credits)
-    row("Net federal tax    (line 42000)", r.net_federal_tax)
-    row("Provincial/territorial tax",    r.net_provincial_tax)
-    row("Total payable      (line 43500)", r.total_payable)
-
-    print(f"\n  PAYMENTS & WITHHOLDINGS")
-    print(f"  {sep}")
-    row("Tax withheld (T4 Box 22 etc.)", r.total_credits_and_payments)
-
-    print(f"\n  {'═' * width}")
-    label = "BALANCE OWING" if r.balance_owing >= 0 else "REFUND"
-    print(f"  {label:<{width - 2}} ${abs(r.balance_owing):>12,.2f}")
-    print(f"  {'═' * width}")
-
-    if r.notes:
-        print(f"\n  NOTES")
-        for note in r.notes:
-            print(f"  • {note}")
-    print()
-
-
-# ── Example usage ─────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    taxpayer = TaxInput(
-        province             = "ON",
-
-        # Income
-        employment_income    = 95_000,
-        eligible_dividends   = 5_000,
-        other_investment_income = 1_200,
-        capital_gains        = 8_000,
-        capital_losses       = 2_000,
-        self_employment_income = 12_000,
-
-        # Deductions
-        rrsp_deduction       = 10_000,
-        union_dues           = 800,
-        childcare_expenses   = 4_000,
-
-        # Credits
-        medical_expenses     = 3_500,
-        charitable_donations = 500,
-        tuition_paid         = 0,
-
-        # Withholdings
-        tax_withheld         = 22_000,
-        cpp_contributions    = 3_300,
-        ei_premiums          = 1_049,
-    )
-    
-
-    result = calculate_tax(taxpayer)
-    print_summary(result)

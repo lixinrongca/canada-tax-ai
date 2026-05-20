@@ -1,8 +1,8 @@
 from langchain.agents import AgentState
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from canada_tax_ai.core.agent_state import AgentState
 
-from canada_tax_ai.models import UserProfile
+from canada_tax_ai.models import T4SlipData, T5SlipData, UserProfile,TaxInputData
 from canada_tax_ai.persist.repository import TaxSlipRepository
 from canada_tax_ai.persist.supabase_client import SupabaseClient
 from ..tax_calculator import calculate_tax
@@ -10,6 +10,11 @@ from ..rag.rag import retriever
 from supabase import Client
 from datetime import datetime
 import json
+from loguru import logger
+from typing import Annotated, Optional
+from langgraph.types import Command
+from langchain_core.messages import ToolMessage
+from canada_tax_ai.utils import remove_sin_hyphens,render_markdown_table,render_slip_table
 
 @tool
 def canadian_tax_calculator(gross_income: float, rrsp: float = 0.0, other_deductions: float = 0.0, has_spouse: bool = False, children: int = 0) -> dict:
@@ -29,13 +34,22 @@ def query_cra_rules(query: str) -> str:
 
 def query_tax_slips(state: AgentState):
     """Your PaddleOCR + regex processing tool"""
-    sin = state.get("profile", {}).model_dump().get("sin") if state.get("profile") else None
+    raw_sin = state.get("profile", {}).model_dump().get("sin") if state.get("profile") else None
+    try:
+        sin = remove_sin_hyphens(raw_sin)
+    except Exception as e:
+        logger.info(f"Sin is not correct")
+        return {"messages": "No SIN available in user profile to query tax slips.What is your SIN?", "knowledge": state.get("knowledge", {})}
     if sin:
         try:
             repo = TaxSlipRepository()
             slips = repo.get_t45_by_sin(sin,"t4")
-            print(f"Queried tax slips for SIN {sin}: {slips}")
-            return {"messages": slips if slips else "No tax slips found for this SIN.", "knowledge": state.get("knowledge", {})}
+            logger.info(f"Queried tax slips for SIN {sin}: {slips}")
+            doc_type = "T4" if slips and slips[0].get("document_type") == "T4" else "T5"
+            model = T4SlipData if doc_type == "T4" else T5SlipData
+            # table = dict_to_markdown_table(slips)
+            table = render_slip_table({"t4": slips}, "T4", model)
+            return {"messages": table if slips else "No tax slips found for this SIN.", "knowledge": state.get("knowledge", {})}
         except Exception as e:
             print(f"Error querying tax slips: {e}")
             return {"messages": "Please upload your tax slips.", "knowledge": state.get("knowledge", {})}
@@ -46,10 +60,30 @@ def query_tax_slips(state: AgentState):
 def query_profile(state: AgentState):
     """Your PaddleOCR + regex processing tool"""
     print(f"Getting user profile for tool: {state.get('next_tool')}")
+    if(state.get("profile")):
+        profile = state.get("profile")
+        table = render_markdown_table([profile.model_dump()])
+        return {"messages": table, "knowledge": state.get("knowledge", {})}
+    else:
+        return {"messages": "No profile data available.", "knowledge": state.get("knowledge", {})}
+
+def confirm_profile(state: AgentState):
+    """This tool can be called to confirm that the UserProfile is complete and accurate before saving to DB."""
+    profile = state.get("profile", {})
+    print(f"Confirming user profile: {profile}")
+    if not profile:
+        return {"messages": "No profile data to confirm.", "knowledge": state.get("knowledge", {})}
+    
+    # Here you could add additional checks or even call an LLM to validate the profile data before confirming
     return {
-        "messages": state.get("profile", {}).model_dump_json(indent=2) if state.get("profile") else "No profile data",
+        "messages": "Please confirm that your profile information is correct:\n" + json.dumps(profile.model_dump(exclude_none=True), indent=2),
         "knowledge": state.get("knowledge", {}),
     }
+
+def merge_node(state: AgentState) -> AgentState:
+    """Runs after both parallel branches complete."""
+    return state   # LangGraph has already merged via reducers
+
 
 @tool
 def save_tax_record_to_db(record: dict):
@@ -94,17 +128,76 @@ def save_to_db(profile: UserProfile):
 
     return {
         "messages": [message + " | Data: " + json.dumps(data, ensure_ascii=False)],
-        "knowledge": "knowledge",
+        "knowledge": {},
         "profile": profile
     }
 
+
+def save_profile(profile: UserProfile)->str:
+    """Saves the UserProfile entity to the database. This should be called whenever the UserProfile is updated with new information."""
+    logger.info(f"Saving profile to DB: {profile}")
+    repo = TaxSlipRepository()
+    data = profile.model_dump(exclude_none=True)
+    message =""
+    try:
+        saved = repo.upsert(data, "user_profiles")
+        message = "Successful save with ID: " + saved.get("id")
+    except Exception as e:
+        logger.info(f"Error saving to DB: {e}")
+        message = str(e)
+
+    return {
+        "messages": [message + " | Data: " + json.dumps(data, ensure_ascii=False)],
+        "knowledge": {},
+        "profile": profile
+    }
+
+@tool(args_schema=TaxInputData)
+def update_tax_data(
+    province: Optional[str] = None,
+    employment_income:     Optional[float] = None,
+    eligible_dividends:    Optional[float] = None,
+    capital_gains:         Optional[float] = None,
+    capital_losses:        Optional[float] = None,
+    self_employment_income: Optional[float] = None,
+    rrsp_contribution:     Optional[float] = None,
+    union_dues:             Optional[float] = None,
+    childcare_expenses:     Optional[float] = None,
+    moving_expenses:        Optional[float] = None,
+    other_deductions:       Optional[float] = None,
+    medical_expenses:         Optional[float] = None,
+    charitable_donations:     Optional[float] = None,
+    tuition_paid:             Optional[float] = None,
+    federal_tax_withheld:  Optional[float] = None,
+    cpp_contributions:     Optional[float] = None,
+    ei_premiums:           Optional[float] = None,
+    total_rent_paid:          Optional[float] = None,
+    property_tax_paid:        Optional[float] = None,
+    other_investment_income: Optional[float] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = None  
+) -> Command:   
+    """Save extracted tax data fields to the database."""
+    data = {k: v for k, v in locals().items() if v is not None}
+    # save data...
+    logger.info(f"Saving tax data to DB: {data}")
+    return Command(
+        update={
+            "tax_input_data": data,
+            "messages": [ToolMessage(         # ✅ required — tells LLM tool succeeded
+                content=f"Update tax data: {json.dumps(data, ensure_ascii=False)}",
+                tool_call_id=tool_call_id
+            )]
+        }
+    )
+    # return f"Saved {len(data)} tax fields successfully"
+    
 @tool
 def end_node(profile: UserProfile):
     """This tool can be called to signal the end of the workflow. It doesn't perform any action but can be used for clarity in the graph."""
 
     return {
         "messages": "UserProfile saved to DB.",
-        "knowledge": "knowledge",
+        "knowledge": {},
         "profile": profile
     }
 

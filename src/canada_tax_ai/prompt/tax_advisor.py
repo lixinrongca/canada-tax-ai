@@ -2,12 +2,14 @@
 from langchain.messages import SystemMessage, ToolMessage
 
 from canada_tax_ai.core.agent_state import AgentState
-from canada_tax_ai.models import UserProfile
+from canada_tax_ai.models import TaxInputData, UserProfile
 from canada_tax_ai.prompt.prompt_registry import sys_prompt, temp_prompt
 from canada_tax_ai.prompt.provincial_credits import get_provincial_credits, get_province, PROVINCES
 from loguru import logger
 import json
+from datetime import datetime
 from canada_tax_ai.utils import calculate_age
+from dataclasses import dataclass, asdict
 
 BASIC_INFORMATION_PROMPT = """
 You are a professional financial expert assisting the user with preparing their personal income tax return (Canada CRA is the default; if the user is in another country, confirm the tax authority first).  
@@ -96,6 +98,29 @@ Already Claimed: {already_claimed}
     - Flag high-value opportunities first
     - Never ask about something already confirmed or denied
     - Keep responses concise and friendly
+
+You MUST call the tool `update_tax_data` after the user provides the specific amount according to tool’s schema definition.
+Tool Execution Policy (Schema Compliance Required):
+
+1. Always derive tool inputs strictly from the tool’s schema definition.
+2. Input must be a valid JSON-like dictionary matching:
+   - required fields exactly
+   - correct data types
+   - no additional or unexpected keys
+
+3. Data validation rules:
+   - number fields → must be numeric (no symbols, commas, or text)
+   - string fields → must match expected format if defined
+   - optional fields → include only if explicitly provided
+
+4. Missing data handling:
+   - If any required field is missing → DO NOT call the tool
+   - Instead, ask the user only for the missing values
+
+5. Output rules:
+   - Never wrap tool input in markdown or code blocks
+   - Never include explanations when emitting tool input
+   - Tool input must be returned as a raw dictionary/object only
 """
 
 
@@ -118,6 +143,7 @@ Every $1,000 contributed saves ~${rrsp_savings} at your income level.
 This is one of the most powerful deductions available.
 
 What was your total RRSP contribution this year?
+
 """,
         "value_hint": "Saves ~{marginal_rate}% of contributed amount"
     },
@@ -129,10 +155,14 @@ What was your total RRSP contribution this year?
         "trigger": "has_t4",
         "auto_apply": True,
         "prompt": """
-From your T4:
-- CPP contributions: ${cpp}
-- EI premiums: ${ei}
-Combined federal credit: ~${cpp_ei_credit} ✅ Already applied.
+Already extracted tax data from T4 slip(s):
+${already_extracted_tax_data}
+
+RULES:
+- If tax data has already been extracted (provided in <already_extracted_tax_data>),
+  NEVER ask the user to re-enter those values.
+- Use the extracted values directly in all calculations.
+- Only ask the user for values that are missing or not yet extracted.
 """,
         "value_hint": "Automatic from T4"
     },
@@ -605,6 +635,7 @@ def build_advisor_prompt(
     net_income: float = 50_000,
     cpp: float = 0,
     ei: float = 0,
+    already_extracted_tax_data: str = "{}",
     is_senior: bool = False,
     is_investor: bool = False,
     is_farmer: bool = False,
@@ -636,53 +667,81 @@ def build_advisor_prompt(
         province=province,
         province_name=province_name,
         filing_year=filing_year,
+        ei=ei,
+        cpp=cpp,
         marital_status=marital_status or "unknown",
         has_dependants="Yes" if has_dependants else "No",
         already_claimed=", ".join(already_claimed) if already_claimed else "None yet",
         confirmed_slips=", ".join(confirmed_slips) if confirmed_slips else "None uploaded yet",
         provincial_context=provincial_context,
+        already_extracted_tax_data=already_extracted_tax_data,
     )
 
 def advisor_message(state: AgentState):
     profile = state.get("profile", {})
     knowledge_json = json.dumps(state.get("knowledge", {}), ensure_ascii=False, indent=2)
-    logger.info(f"Current UserProfile: {profile}")
+    # existing = state.get("extracted_data", {})
+    logger.info(f"Current UserProfile Type: {type(profile)}")
     logger.info(f"Current knowledge: {knowledge_json}")
     # profile_json = json.dumps(profile)
 
-    province       = getattr(profile, "province", "ON")
-    marital_status = getattr(profile, "marital_status", "")
-    filing_year    = getattr(profile, "filing_year", 2025)
-    is_senior      = getattr(profile, "age", 0) >= 65
-    is_under_25    = getattr(profile, "age", 30) < 25
-
-
     if not _is_user_profile_complete(state):
-        logger.warning("Province missing or invalid in UserProfile. Defaulting to ON.")
+        logger.warning("UserProfile is incomplete. Prompting for missing information before proceeding to tax advice.")
         system_message = SystemMessage(content=temp_prompt("user_profile", "v1",knowledge_json=knowledge_json, profile_json=profile))
         return [system_message]+ state["messages"]
-        # province = "ON"  # Default to Ontario if not provided
 
-    # date_of_birth = getattr(profile, "date_of_birth")
-    # if date_of_birth not in (None, "", "None", "null", {},[]):
-    #     age = calculate_age(date_of_birth)
-    #     is_senior      = age >= 65
-    #     is_under_25    = age < 25
+    province       = getattr(profile, "province", "ON")
+    marital_status = getattr(profile, "marital_status", "")
+    filing_year    = datetime.now().strftime("%Y")
+    
+    # is_senior      = getattr(profile, "age", 0) >= 65
+    # is_under_25    = getattr(profile, "age", 30) < 25
+
+    date_of_birth = getattr(profile, "date_of_birth")
+    if date_of_birth not in (None, "", "None", "null", {},[]):
+        age = calculate_age(date_of_birth)
+        is_senior      = age >= 65
+        is_under_25    = age < 25
 
     already_claimed = state.get("already_claimed", [])
     already_denied  = state.get("already_denied", [])
+
+
+    
+    logger.info(f"state is {state}")
+
+    taxslips = state.get("extracted_data")
+    logger.info(f"Extracted tax slips: {taxslips}")
+    t4 = taxslips.get("t4", []) if taxslips else []
+    logger.info(f"t4 is {t4}")
+    t5 = taxslips.get("t5", []) if taxslips else []
+    logger.info(f"t5 is {t5}")
+    has_t4 = bool(t4)
+    logger.info(f"t4 is {has_t4}")
+
+    has_t5 = bool(t5)
+    logger.info(f"t5 is {has_t5}")
+
+    # inp = build_tax_input(t4, t5)
+    raw = state.get("tax_input_data", {})
+    if raw is None:
+        input_data = TaxInputData()
+    if isinstance(raw, TaxInputData):
+        input_data = raw          # already correct type (first run, before checkpoint)
+    if isinstance(raw, dict):
+        input_data = TaxInputData(**raw)  
 
     next_opp = get_next_opportunity(
         already_claimed=already_claimed,
         already_denied=already_denied,
         province=province,
         filing_year=filing_year,
-        has_t4=bool(state.get("t4_slips")),
-        has_t5=bool(state.get("t5_slips")),
+        has_t4=has_t4,
+        has_t5=has_t5,
         marital_status=marital_status,
         is_senior=is_senior,
         has_dependants=bool(getattr(profile, "dependants", False)),
-        is_investor=bool(state.get("t5_slips")),
+        is_investor=has_t5,
         is_farmer=getattr(profile, "is_farmer", False),
         is_self_employed=getattr(profile, "is_self_employed", False),
         is_under_25=is_under_25,
@@ -693,14 +752,15 @@ def advisor_message(state: AgentState):
         filing_year=filing_year,
         marital_status=marital_status,
         has_dependants=bool(getattr(profile, "dependants", False)),
-        confirmed_slips=state.get("confirmed_slips", []),
+        confirmed_slips=[str(x) for x in t4] + [str(x) for x in t5] if taxslips else [],
         already_claimed=already_claimed,
         marginal_rate=state.get("marginal_rate", 33),
-        net_income=state.get("net_income", 50_000),
-        cpp=state.get("cpp", 0),
-        ei=state.get("ei", 0),
+        net_income=input_data.employment_income if input_data.employment_income else 50_000,
+        # cpp=inp.cpp_contributions if inp.cpp_contributions else 0,
+        # ei=inp.ei_premiums if inp.ei_premiums else 0,
+        already_extracted_tax_data=input_data.model_dump() if input_data else "{}",
         is_senior=is_senior,
-        is_investor=bool(state.get("t5_slips")),
+        is_investor=has_t5,
         is_farmer=getattr(profile, "is_farmer", False),
         is_self_employed=getattr(profile, "is_self_employed", False),
         is_under_25=is_under_25,

@@ -1,5 +1,8 @@
 from fpdf import FPDF
 import re
+from datetime import date, datetime
+
+from pydantic import BaseModel
 
 class TaxPDF(FPDF):
     def header(self):
@@ -52,7 +55,7 @@ def parse_t5(text: str) -> dict:
             r'(?:21\s*\|\s*Report|Code\s+du\s+feuillet)[^\n]*?\n([A-Z0-9])'
         ) or find(r'Report\s+(?:Code\s+)?[\|]?\s*([A-Z0-9])\b'),
 
-        # TODO extracted data is not accurate - need better regex patterns and/or LLM parsing fallback
+        # TODO extracted data is not accurate, need to improve regex or rely more on LLM parsing
         "interest_income": find(                            # Box 13
             r'(?:13\s*\|?\s*Interest\s+from\s+Canadian\s+sources'
             r'|Intérêts\s+de\s+source\s+canadienne)'
@@ -196,3 +199,100 @@ def parse_t4(text: str) -> dict:
     if not match:
         return {}
     return match.groupdict()
+
+def calculate_age(bod: str) -> int:
+    # bod format: "YYYY-MM-DD"
+    birth_date = datetime.strptime(bod, "%Y-%m-%d").date()
+    today = date.today()
+
+    age = today.year - birth_date.year
+
+    # If birthday hasn't happened yet this year, subtract 1
+    if (today.month, today.day) < (birth_date.month, birth_date.day):
+        age -= 1
+
+    return age
+
+import re
+
+def remove_sin_hyphens(sin_number: str) -> str:
+    """
+    Normalize a Canadian SIN by removing all non-digit characters
+    and returning a strict 9-digit numeric string.
+
+    Examples:
+        "123-456-789" -> "123456789"
+        "123 456 789" -> "123456789"
+        "123.456.789" -> "123456789"
+    """
+
+    if not isinstance(sin_number, str):
+        raise TypeError("SIN number must be a string.")
+
+    cleaned = re.sub(r"\D+", "", sin_number.strip())
+
+    if not re.fullmatch(r"\d{9}", cleaned):
+        raise ValueError(
+            "Invalid SIN number: must contain exactly 9 digits after normalization."
+        )
+
+    return cleaned
+
+def render_markdown_table(data: list[dict]) -> str:
+    """
+    Convert a list of dictionaries into a markdown table.
+
+    Example:
+        [
+            {"name": "John", "age": 30},
+            {"name": "Alice", "age": 25}
+        ]
+    """
+
+    if not data:
+        return "No data available."
+
+    sections = []
+
+    for index, row in enumerate(data, start=1):
+        lines = [
+            f"### Record {index}",
+            "",
+            "| Field | Value |",
+            "|---|---|"
+        ]
+
+        for key, value in row.items():
+            if key not in ["id","created_at","updated_at"]:
+                lines.append(f"| {key} | {value} |")
+
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def render_slip_table(extracted: dict, doc_type: str,model:BaseModel) -> str:
+    """Render the latest T4 or T5 slip as a markdown table."""
+    
+    slip_list = extracted.get("t4" if doc_type == "T4" else "t5", [])
+    
+    if not slip_list:
+        return f"_No {doc_type} slip data found._"
+    
+    slip        = slip_list[-1]  # latest slip
+    descriptions = {k: v.description for k, v in model.model_fields.items()}
+
+    def fmt(value) -> str:
+        if isinstance(value, float): return f"{value:,.2f}"
+        if isinstance(value, int):   return f"{value:,}"
+        return str(value) if value else "—"
+
+    # Build rows
+    rows = [
+        f"| {descriptions.get(field, field)} | {fmt(value)} |"
+        for field, value in slip.items()
+        if field in descriptions
+    ]
+
+    header = f"| Description | Value |\n|---|---|"
+    return "\n".join([header, *rows])

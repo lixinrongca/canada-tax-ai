@@ -1,7 +1,9 @@
 from functools import reduce
 
 from loguru import logger
-from canada_tax_ai.models import TaxInput
+from canada_tax_ai.models import TaxInputData
+from canada_tax_ai.models import TaxInputData
+from typing import List, Dict, Optional
 
 
 def _safe_float(val) -> float:
@@ -24,56 +26,72 @@ def _first_field(slips: list[dict], field: str, default=None):
             return val
     return default
 
+def update_tax_input_from_dict(existing: TaxInputData, updates: dict) -> TaxInputData:
+    """
+    Update existing TaxInputData with a partial dict of new values.
+    Only updates fields present in the dict — all other fields unchanged.
+    """
+    if not updates:
+        return existing
 
-def build_tax_input(t4_list: list[dict], t5_list: list[dict]) -> TaxInput:
+    current = existing.model_dump()
+
+    for field, value in updates.items():
+        if field not in current:
+            logger.warning(f"⚠ Unknown field '{field}' — skipped")
+            continue
+        if value is not None:
+            logger.info(f"  ✅ {field}: {current.get(field)} → {value}")
+            current[field] = value
+
+    return TaxInputData(**current)
+
+def update_tax_input(
+    existing: TaxInputData,
+    t4_list: list[dict],
+    t5_list: list[dict]
+) -> TaxInputData:
     """
-    Build TaxInput from multiple T4 and T5 slips.
-    Numeric fields are summed across all slips.
-    Non-numeric fields use first non-empty value.
+    Update existing TaxInputData with values from T4/T5 slips.
+    - Slip values only fill None fields — never overwrite user-provided values.
+    - Zero slip values are skipped (stored as None).
     """
-    # Fallback to empty list if None
     t4_list = t4_list or []
     t5_list = t5_list or []
-    logger.info(f"Building TaxInput from {len(t4_list)} T4 slips and {len(t5_list)} T5 slips.")
+    logger.info(f"Updating TaxInputData from {len(t4_list)} T4 and {len(t5_list)} T5 slips.")
 
-    return TaxInput(
+    def none_if_zero(value: float) -> Optional[float]:
+        return value if value else None
+    
+    # ── Compute from slips ────────────────────────────────────────────────
+    slip_values = {
         # Province — first T4, fall back to ON
-        province=_first_field(t4_list, "province_employment") or "ON",
+        "province": _first_field(t4_list, "province_employment"),
+        # T4
+        "employment_income":    none_if_zero(_sum_field(t4_list, "gross_income")),
+        "rrsp_contribution":    none_if_zero(_sum_field(t4_list, "rrsp")),
+        "union_dues":           none_if_zero(_sum_field(t4_list, "union_dues")),
+        "federal_tax_withheld": none_if_zero(_sum_field(t4_list, "tax_deducted")),
+        "cpp_contributions":    none_if_zero(_sum_field(t4_list, "cpp")),
+        "ei_premiums":          none_if_zero(_sum_field(t4_list, "ei")),
+        # T5
+        "eligible_dividends":   none_if_zero(
+                                    _sum_field(t5_list, "actual_dividends") +
+                                    _sum_field(t5_list, "actual_amount_other_dividends")
+                                ),
+        "capital_gains":        none_if_zero(_sum_field(t5_list, "capital_gains_dividends")),
+    }
 
-        # ── Income ────────────────────────────────────────────────
-        # Sum employment income across all T4s (e.g. two jobs)
-        employment_income=_sum_field(t4_list, "gross_income"),
+    # ── Merge: existing value wins, slip value fills None fields ──────────
 
-        # Sum eligible dividends across all T5s
-        eligible_dividends=_sum_field(t5_list, "actual_dividends"),
+    logger.info(f"Existing TaxInputData Type is {type(existing)}")
+    logger.info(f"Existing TaxInputData before update: {existing.model_dump(exclude_none=True)}")
+    current = existing.model_dump()
+    for field, slip_value in slip_values.items():
+        if current.get(field) is None and slip_value is not None:
+            current[field] = slip_value
+            logger.info(f"  ✅ {field} filled from slip: {slip_value}")
+        elif current.get(field) is not None:
+            logger.info(f"  ⏭ {field} kept user value: {current[field]}")
 
-        # Sum interest + foreign income across all T5s
-        other_investment_income=(
-            _sum_field(t5_list, "interest_income")
-            + _sum_field(t5_list, "foreign_income")
-        ),
-
-        # Sum capital gains dividends across all T5s
-        capital_gains=_sum_field(t5_list, "capital_gains_dividends"),
-
-        capital_losses=0.0,           # requires Schedule 3
-        self_employment_income=0.0,   # requires T2125
-
-        # ── Deductions ────────────────────────────────────────────
-        rrsp_deduction=_sum_field(t4_list, "rrsp"),
-        union_dues=_sum_field(t4_list, "union_dues"),      # T4 Box 44
-        childcare_expenses=0.0,       # requires Form T778
-        moving_expenses=0.0,          # requires Form T1-M
-        other_deductions=0.0,
-
-        # ── Credits ───────────────────────────────────────────────
-        medical_expenses=0.0,         # requires receipts
-        charitable_donations=0.0,     # requires receipts
-        tuition_paid=0.0,             # requires T2202
-
-        # ── Withholdings ─────────────────────────────────────────
-        # Sum across all T4s — multiple employers each withhold tax
-        tax_withheld=_sum_field(t4_list, "tax_deducted"),  # T4 Box 22
-        cpp_contributions=_sum_field(t4_list, "cpp"),      # T4 Box 16
-        ei_premiums=_sum_field(t4_list, "ei"),             # T4 Box 18
-    )
+    return TaxInputData(**current)
