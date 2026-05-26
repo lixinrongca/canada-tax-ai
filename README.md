@@ -8,6 +8,27 @@ The project is designed to make personal tax filing more accessible, less stress
 
 ---
 
+## Key System Capabilities
+
+- Conversational AI tax assistant powered by LLMs
+- Automated T4 / T5 document extraction using OCR + parsing pipeline
+- RAG-based tax knowledge retrieval system
+- Embedding router
+- Prompts version control
+- Multi-step workflow orchestration via LangGraph
+- Secure user data storage with Supabase
+- Semantic search over tax documents using embeddings
+---
+
+# AI Capabilities
+
+- Natural language conversation and tax guidance
+- Intelligent tax document parsing and classification
+- Multi-step workflow orchestration for tax filing processes
+- Personalized tax deduction and credit recommendations
+- Context-aware memory and user interaction management
+---
+
 ## Core Application Layer
 
 - **Streamlit (UI Layer)**  
@@ -25,6 +46,8 @@ The project is designed to make personal tax filing more accessible, less stress
   - Tax document understanding pipeline
   - Conversation state management
   - Multi-agent reasoning flows
+  - Embedding router
+  - Prompts version control
 
 - **LangChain + LangChain Community**  
   Provides tool calling, prompt orchestration, memory handling, and integration with external APIs.
@@ -70,31 +93,10 @@ The project is designed to make personal tax filing more accessible, less stress
 - **Supabase**  
   Backend-as-a-service for:
   - User authentication
-  - Cloud database storage
-  - File storage (tax documents, reports)
+  - Local database storage
 
 - **Pydantic**  
   Data validation and structured schema definitions for tax forms and AI outputs.
-
----
-
-## Key System Capabilities
-
-- Conversational AI tax assistant powered by LLMs
-- Automated T4 / T5 document extraction using OCR + parsing pipeline
-- RAG-based tax knowledge retrieval system
-- Multi-step workflow orchestration via LangGraph
-- Secure user data storage with Supabase
-- Semantic search over tax documents using embeddings
----
-
-# AI Capabilities
-
-- Natural language conversation and tax guidance
-- Intelligent tax document parsing and classification
-- Multi-step workflow orchestration for tax filing processes
-- Personalized tax deduction and credit recommendations
-- Context-aware memory and user interaction management
 
 ---
 
@@ -106,18 +108,20 @@ The project is designed to make personal tax filing more accessible, less stress
 - Personal tax filing guidance
 - User-friendly workflow for Canadian tax scenarios
 - Secure and privacy-focused system design
+- Embedding router
+- Prompts version control
 
-# How to run
+# How To Run
 #Mac OS<br>
-python3 -m venv venv<br>
+- python3 -m venv venv<br>
 
-source venv/bin/activate<br>
+- source venv/bin/activate<br>
 
-pip install -e .<br>
+- pip install -e .<br>
 
-cp .env.example .env<br>
+- cp .env.example .env<br>
 
-streamlit run src/app.py<br>
+- streamlit run src/app.py<br>
 
 # DEMO
 ![demo](images/demo.png)
