@@ -120,4 +120,4 @@ cp .env.example .env<br>
 streamlit run src/app.py<br>
 
 # DEMO
-![demo](images/demo1.png)
+![demo](images/demo.png)
