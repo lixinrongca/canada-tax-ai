@@ -102,6 +102,8 @@ Already Claimed: {already_claimed}
 You MUST call the tool `update_tax_data` after the user provides the specific amount according to tool’s schema definition.
 Tool Execution Policy (Schema Compliance Required):
 
+You MUST call the tool `update_profile_data` after the user provides any new or updated profile information according to tool’s schema definition.
+
 1. Always derive tool inputs strictly from the tool’s schema definition.
 2. Input must be a valid JSON-like dictionary matching:
    - required fields exactly

@@ -1,5 +1,4 @@
 import streamlit as st
-from canada_tax_ai.tax_calculator import calculate_tax
 from canada_tax_ai.core.graph import process_chat, process_document
 from canada_tax_ai.utils import render_slip_table
 from canada_tax_ai.pages.auth import login_page, logout_button

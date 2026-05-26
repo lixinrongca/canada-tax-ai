@@ -1,13 +1,15 @@
 # 🇨🇦 Canada Tax AI
 
-Canadian Automated Tax Assistant with T4/T5 OCR.
+Canadian Automated Tax Assistant.
 
 #Mac OS
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
-cp .env.example .env
-streamlit run src/streamlit_app.py
+python3 -m venv venv \n\r
+source venv/bin/activate \n\r
+pip install -e . \n\r
+cp .env.example .env \n\r
+streamlit run src/app.py \n\r
+
+
 
 -- Drop existing function if it exists (to avoid conflicts)
 DROP FUNCTION IF EXISTS public.execute_sql(text);

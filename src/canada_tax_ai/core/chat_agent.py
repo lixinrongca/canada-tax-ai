@@ -9,10 +9,10 @@ from canada_tax_ai.prompt.tax_advisor import advisor_message
 from .llm import get_llm
 from .agent_state import AgentState
 from ..prompt.prompt_registry import sys_prompt,temp_prompt
-from ..tools.tools import  save_profile, update_tax_data, verify_addresss
+from ..tools.tools import  save_profile, update_profile_data, update_tax_data, verify_addresss
 from loguru import logger
 
-tools = [verify_addresss,update_tax_data]  # tool names for LLM to call
+tools = [verify_addresss,update_tax_data,update_profile_data]  # tool names for LLM to call
 
 llm = get_llm(tools=tools)
 
@@ -125,16 +125,13 @@ def chat_node(state: AgentState):
                     tax_input = _update_tax_input_from_dict(tax_input, data)
                     # state_updates["tax_input_data"] = data  # ✅ returned from node
                     logger.info(f"✅ tax_input_data updated in node: {tax_input.model_dump(exclude_none=True)}")
+                if name == "update_profile_data":
+                    # ✅ Build UserProfile and update state directly
+                    profile_data = UserProfile(**args)
+                    data = profile_data.model_dump(exclude_none=True)
 
-                    # ✅ Append ToolMessage so LLM knows the tool succeeded
-                    # new_messages = new_messages + [ToolMessage(
-                    #     content=f"Updated tax data: {json.dumps(data, ensure_ascii=False)}",
-                    #     tool_call_id=tool_call["id"]
-                    # )]
-                    # state_updates["messages"].append(ToolMessage(
-                    #     content=f"Updated: {json.dumps(data, ensure_ascii=False)}",
-                    #     tool_call_id=tool_call["id"]
-                    # ))
+                    profile = profile.model_copy(update=data)
+                    logger.info(f"✅ profile updated in node: {profile.model_dump_json(indent=2)}")
                 # add other tools here...
 
     # ✅ Node returns all state updates including tax_input_data

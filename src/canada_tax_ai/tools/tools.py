@@ -5,7 +5,6 @@ from canada_tax_ai.core.agent_state import AgentState
 from canada_tax_ai.models import T4SlipData, T5SlipData, UserProfile,TaxInputData
 from canada_tax_ai.persist.repository import TaxSlipRepository
 from canada_tax_ai.persist.supabase_client import SupabaseClient
-from ..tax_calculator import calculate_tax
 from ..rag.rag import retriever
 from supabase import Client
 from datetime import datetime
@@ -15,13 +14,6 @@ from typing import Annotated, Optional
 from langgraph.types import Command
 from langchain_core.messages import ToolMessage
 from canada_tax_ai.utils import remove_sin_hyphens,render_markdown_table,render_slip_table
-
-@tool
-def canadian_tax_calculator(gross_income: float, rrsp: float = 0.0, other_deductions: float = 0.0, has_spouse: bool = False, children: int = 0) -> dict:
-    """
-    Calculate Canadian federal and provincial taxes based on the provided financial information and family status.
-    This function uses the calculate_tax function from tax_calculator.py to perform the actual calculations."""
-    return calculate_tax(gross_income, rrsp, other_deductions, has_spouse, children)
 
 @tool
 def query_cra_rules(query: str) -> str:
@@ -152,6 +144,27 @@ def save_profile(profile: UserProfile)->str:
         "profile": profile
     }
 
+@tool(args_schema=UserProfile)
+def update_profile_data(
+    last_name: Optional[str] = None,
+    first_name: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    date_of_birth: Optional[str] = None,
+    address: Optional[str] = None,
+    marital_status: Optional[str] = None,
+    dependents: Optional[list] = None,
+    sin: Optional[str] = None,
+    province: Optional[str] = None,
+    language: Optional[str] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = None  
+) -> Command:   
+    """Save extracted profile data fields to the database."""
+    data = {k: v for k, v in locals().items() if v is not None}
+    # save data...
+    logger.info(f"Saving profile data to DB: {data}")
+    
+    return f"Saved {len(data)} profile fields successfully"
+
 @tool(args_schema=TaxInputData)
 def update_tax_data(
     province: Optional[str] = None,
@@ -175,21 +188,18 @@ def update_tax_data(
     property_tax_paid:        Optional[float] = None,
     other_investment_income: Optional[float] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = None  
-) -> Command:   
+):   
     """Save extracted tax data fields to the database."""
     data = {k: v for k, v in locals().items() if v is not None}
     # save data...
     logger.info(f"Saving tax data to DB: {data}")
-    return Command(
-        update={
-            "tax_input_data": data,
-            "messages": [ToolMessage(         # ✅ required — tells LLM tool succeeded
-                content=f"Update tax data: {json.dumps(data, ensure_ascii=False)}",
-                tool_call_id=tool_call_id
-            )]
-        }
-    )
-    # return f"Saved {len(data)} tax fields successfully"
+    # return {
+    #         "messages": [ToolMessage(         # ✅ required — tells LLM tool succeeded
+    #             content=f"Update tax data: {json.dumps(data, ensure_ascii=False)}",
+    #             tool_call_id=tool_call_id
+    #         )]
+    #     }
+    return f"Saved {len(data)} tax fields successfully"
     
 @tool
 def end_node(profile: UserProfile):

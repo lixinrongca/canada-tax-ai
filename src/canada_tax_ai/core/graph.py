@@ -104,12 +104,6 @@ workflow.add_conditional_edges(
     lambda state: "calculate_tax" if _is_user_profile_complete(state) else END
 )
 
-# workflow.add_conditional_edges(
-#     "chat_node",
-#     lambda state: "db" if _is_user_profile_complete(state) else END
-# )
-# workflow.add_edge("db", "end")
-
 
 # Persistent memory (cross-session)
 checkpointer = MemorySaver()   # Production: use PostgresSaver or Redis
