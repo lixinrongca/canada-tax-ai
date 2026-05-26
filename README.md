@@ -3,12 +3,15 @@
 Canadian Automated Tax Assistant.
 
 #Mac OS
-python3 -m venv venv \n\r
-source venv/bin/activate \n\r
-pip install -e . \n\r
-cp .env.example .env \n\r
-streamlit run src/app.py \n\r
+python3 -m venv venv<br>
 
+source venv/bin/activate<br>
+
+pip install -e .<br>
+
+cp .env.example .env<br>
+
+streamlit run src/app.py<br>
 
 
 -- Drop existing function if it exists (to avoid conflicts)
